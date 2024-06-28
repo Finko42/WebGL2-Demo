@@ -1,29 +1,21 @@
 const V3 = {
-	create(x, y, z) {
-		return { x: x, y: y, z: z };
-	},
-	
 	add(a, b) {
-		a.x = a.x + b.x;
-		a.y = a.y + b.y;
-		a.z = a.z + b.z;
+		a[0] = a[0] + b[0];
+		a[1] = a[1] + b[1];
+		a[2] = a[2] + b[2];
 	},
 	
 	subtract(a, b) {
-		a.x = a.x - b.x;
-		a.y = a.y - b.y;
-		a.z = a.z - b.z;
+		a[0] = a[0] - b[0];
+		a[1] = a[1] - b[1];
+		a[2] = a[2] - b[2];
 	},
 	
 	dot(a, b) {
-		return a.x * b.x + a.y * b.y + a.z * b.z;
+		return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 	},
 	
 	newScale(v, a) {
-		return {
-			x: v.x * a,
-			y: v.y * a,
-			z: v.z * a
-		};
+		return [v[0] * a, v[1] * a, v[2] * a];
 	}
 };
