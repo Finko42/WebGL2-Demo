@@ -1,19 +1,13 @@
 "use strict";
 
-@insert(V3.js)
-@insert(M4.js)
+@insert(scripts/V3.js)
+@insert(scripts/M4.js)
 
 function makeShader(gl, type, source) {
 	const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
-  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-		return shader;
-  }
-     
-  console.log(gl.getShaderInfoLog(shader));
-  gl.deleteShader(shader);
-	return null;
+  return shader;
 }
 
 function main() {
@@ -26,6 +20,12 @@ function main() {
 		);
 		return;
 	}
+	
+	// Since we're flat shading, use first vertex as provoking
+	const epv = gl.getExtension("WEBGL_provoking_vertex");
+  if (epv) {
+    epv.provokingVertexWEBGL(epv.FIRST_VERTEX_CONVENTION_WEBGL);
+  }
 
 	// Vertex shader source code
 	const vsSrc = `#version 300 es
@@ -35,16 +35,32 @@ function main() {
 	in mat4 model;
 
 	uniform mat4 view;
-	uniform mat4 proj;
 	uniform vec3 lightPos;
+	uniform float invAspectRatio;
 	
 	out vec2 vTexCoord;
 	out vec3 vNormal;
 	out vec3 surfaceToLight;
+	
+	#define FOV_Y  60.0
+	#define Z_NEAR 0.1
+	#define Z_FAR  50.0
 
   void main() {
+		const float F = 1.0/tan(radians(FOV_Y)*0.5);
+		const float DEPTH = Z_FAR - Z_NEAR;
+
 		vec4 vertexWorldPos = model * pos;
-		gl_Position = proj * view * vertexWorldPos;
+		gl_Position = view * vertexWorldPos;
+		
+		// Multiply by perspective matrix
+		gl_Position.x *= invAspectRatio * F;
+		gl_Position.y *= F;
+		float z = gl_Position.z;
+		gl_Position.z = (Z_FAR + Z_NEAR) / DEPTH * z +
+		                -2.0 * Z_FAR * Z_NEAR / DEPTH * gl_Position.w;
+		gl_Position.w = z;
+
 		vTexCoord = aTexCoord;
 		vNormal = mat3(model) * aNormal;
 		surfaceToLight = lightPos - vertexWorldPos.xyz;
@@ -64,56 +80,51 @@ function main() {
 
 	void main() {
 		outColor = texture(uTexture, vTexCoord);
-		outColor.rgb *= max(0.175, dot(normalize(vNormal), normalize(surfaceToLight)));
+		outColor.rgb *= 0.175 + max(0.0, dot(normalize(vNormal), normalize(surfaceToLight)));
 	}`;
 
+	// Don't check shader compile status as it is synchronous
 	const vertexShader = makeShader(gl, gl.VERTEX_SHADER, vsSrc);
-	if (!vertexShader) {
-		alert("Vertex shader failed to compile. More info in console.");
-		return;
-	}
 	const fragmentShader = makeShader(gl, gl.FRAGMENT_SHADER, fsSrc);
-	if (!fragmentShader) {
-		alert("Fragment shader failed to compile. More info in console.");
-		return;
-	}
 
 	const shaderProgram = gl.createProgram();
   gl.attachShader(shaderProgram, vertexShader);
   gl.attachShader(shaderProgram, fragmentShader);
   gl.linkProgram(shaderProgram);
   if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-		console.log(gl.getProgramInfoLog(shaderProgram));
+		console.error(`Link failed: ${gl.getProgramInfoLog(shaderProgram)}`);
+		console.error(`Vertex shader info-log: ${gl.getShaderInfoLog(vertexShader)}`);
+		console.error(`Fragment shader info-log: ${gl.getShaderInfoLog(fragmentShader)}`);
+		gl.deleteShader(vertexShader);
+		gl.deleteShader(fragmentShader);
 		gl.deleteProgram(shaderProgram);
-		alert("Shader program failed to link. More info in console.");
     return;
   }
+	
+	gl.deleteShader(vertexShader);
+	gl.deleteShader(fragmentShader);
 	
 	gl.useProgram(shaderProgram);
 
 	const texture = gl.createTexture();
 	gl.activeTexture(gl.TEXTURE0);
 	gl.bindTexture(gl.TEXTURE_2D, texture);
- 
-	/* Images can take a while to load. Until then, put a single
-	   pixel in the texture so we can use it immediately. It
-	   will be updated when it loads. */
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
-	              gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
+	gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 256, 256);
  
 	// Asynchronously load an image
 	const image = new Image();
 	image.onload = () => {
 		// Now that the image has loaded copy it to the texture
 		gl.bindTexture(gl.TEXTURE_2D, texture);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
+		gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 256,
+			gl.RGBA, gl.UNSIGNED_BYTE, image);
 		gl.generateMipmap(gl.TEXTURE_2D);
 	};
-	image.src = "data:image/jpg;base64,@base64(ObamaSquare.jpg)";
+	image.src = "data:image/jpg;base64,@base64(assets/ObamaSquare.jpg)";
 
 	// Get location of uniforms
-	const projectionMatrixUniformLocation =
-		gl.getUniformLocation(shaderProgram, "proj");
+	const invAspectUniformLocation =
+		gl.getUniformLocation(shaderProgram, "invAspectRatio");
 	const viewMatrixUniformLocation =
 		gl.getUniformLocation(shaderProgram, "view");
 	const lightPositionLocation =
@@ -241,27 +252,6 @@ function main() {
 	gl.enable(gl.DEPTH_TEST);
 	gl.enable(gl.CULL_FACE);
 
-	const perspective = {
-		fovY: 65,
-		zNear: 0.1,
-		zFar: 50,
-		// Vertical FOV assumed to be in degrees
-		// Assumes left-handed eye space
-		updateMatrix() {
-			const f = 1 / Math.tan(perspective.fovY * Math.PI / 360);
-			const depth = perspective.zFar - perspective.zNear;
-		
-			gl.uniformMatrix4fv(projectionMatrixUniformLocation, false,
-				new Float32Array([
-					gl.canvas.clientHeight/gl.canvas.clientWidth * f, 0, 0, 0,
-					0, f, 0, 0,
-					0, 0, (perspective.zFar + perspective.zNear) / depth, 1,
-					0, 0, -2 * perspective.zFar * perspective.zNear / depth, 0
-				])
-			);
-		}
-	}
-
 	function resizeCanvas() {
 		const glC = gl.canvas;
 
@@ -279,7 +269,9 @@ function main() {
 
 		gl.viewport(0, 0, glC.width, glC.height);
 
-		perspective.updateMatrix();
+		// Update shaders with new aspect ratio
+		gl.uniform1fv(invAspectUniformLocation,
+			new Float32Array([displayHeight / displayWidth]));
 	}
 
 	resizeCanvas();
@@ -291,46 +283,22 @@ function main() {
 		timeout = setTimeout(resizeCanvas, 80);
 	});
 	
-	const keyPressed = {
-		'a': false,
-		'd': false,
-		's': false,
-		'w': false,
-		' ': false,
-		"shift": false
-	};
-
-	document.addEventListener("keydown", (event) => {
-		keyPressed[event.key.toLowerCase()] = true;
-	});
-	
-	document.addEventListener("keyup", (event) => {
-		keyPressed[event.key.toLowerCase()] = false;
-	});
-	
-	// Lock mouse and turn off mouse acceleration
-	document.body.onclick = async () => {
-		await document.body.requestPointerLock({ unadjustedMovement: true });
-	};
-
 	// invPos is how much the world needs to move
 	// for the camera to be in the right place.
 	// Camera direction is in spherical coordinates
 	const camera = {
-		invPos: V3.create(0, 0, 0),
+		invPos: [0, 0, 0],
 		yaw: 0,
 		pitch: 0
 	};
 
-	let mouseSensitivityX = 0.0025, mouseSensitivityY = 0.0025;
-
-	const MAX_PITCH = 89.5 * Math.PI / 180;
+	const MAX_PITCH = 89 * Math.PI / 180;
 	const TWO_PI = 2 * Math.PI;
 
 	// On mouse movement, update camera direction
 	function mouseMove(event) {
 		// movementX increases to the right
-		camera.yaw += event.movementX * mouseSensitivityX;
+		camera.yaw += event.movementX * 0.0025;
 		while (camera.yaw < -TWO_PI) {
 			camera.yaw += TWO_PI;
 		}
@@ -338,20 +306,42 @@ function main() {
 			camera.yaw -= TWO_PI;
 		}
 		// movementY increases down
-		camera.pitch -= event.movementY * mouseSensitivityY;
+		camera.pitch -= event.movementY * 0.0025;
 		if (camera.pitch > MAX_PITCH) {
 			camera.pitch = MAX_PITCH;
 		} else if (camera.pitch < -MAX_PITCH) {
 			camera.pitch = -MAX_PITCH;
 		}
 	}
+	
+	const keyPressed = {
+		"KeyA": false,
+		"KeyD": false,
+		"KeyS": false,
+		"KeyW": false,
+		"Space": false,
+		"ShiftLeft": false
+	};
 
+	function keyDown(event) { keyPressed[event.code] = true; }
+	function keyUp(event) { keyPressed[event.code] = false; }
+	
+	// When pointer lock changes
 	document.onpointerlockchange = (event) => {
 		if (document.pointerLockElement) {
 			document.addEventListener("mousemove", mouseMove);
+			document.addEventListener("keydown", keyDown);
+			document.addEventListener("keyup", keyUp);
 		} else {
+			document.removeEventListener("keydown", keyDown);
 			document.removeEventListener("mousemove", mouseMove);
+			document.removeEventListener("keyup", keyUp);
 		}
+	};
+	
+	// Lock mouse and turn off mouse acceleration
+	document.body.onclick = async () => {
+		await document.body.requestPointerLock({ unadjustedMovement: true });
 	};
 	
 	let cubeRotationDelta = 0;
@@ -381,32 +371,32 @@ function main() {
 		const cosYaw = Math.cos(currentYaw);
 
 		// Find unit vector of where the camera is facing
-		const forwardVec = V3.create(
+		const forwardVec = [
 			cosPitch * sinYaw,
 			Math.sin(currentPitch),
 			cosPitch * cosYaw
-		);
+		];
 
 		// Find unit vector pointing right of the camera
-		const rightVec = V3.create(
+		const rightVec = [
 			cosYaw,
 			0,
 			-sinYaw
-		);
+		];
 
 		// upVec = forwardVec X rightVec
-		const upVec = V3.create(
-			forwardVec.y * rightVec.z,
+		const upVec = [
+			forwardVec[1] * rightVec[2],
 			cosPitch,
-			-(forwardVec.y * rightVec.x)
-		);
+			-(forwardVec[1] * cosYaw)
+		];
 
 		// Create view matrix and set uniform
 		gl.uniformMatrix4fv(viewMatrixUniformLocation, false,
 			new Float32Array([
-				rightVec.x, upVec.x, forwardVec.x, 0,
-				rightVec.y, upVec.y, forwardVec.y, 0,
-				rightVec.z, upVec.z, forwardVec.z, 0,
+				rightVec[0], upVec[0], forwardVec[0], 0,
+				rightVec[1], upVec[1], forwardVec[1], 0,
+				rightVec[2], upVec[2], forwardVec[2], 0,
 				V3.dot(camera.invPos, rightVec),
 				V3.dot(camera.invPos, upVec),
 				V3.dot(camera.invPos, forwardVec), 1
@@ -435,12 +425,12 @@ function main() {
 		const scaledForwardVec = V3.newScale(forwardVec, deltaPos);
 		const scaledRightVec = V3.newScale(rightVec, deltaPos);
 
-		if (keyPressed['w']) V3.subtract(camera.invPos, scaledForwardVec);
-		if (keyPressed['a']) V3.add(camera.invPos, scaledRightVec);
-		if (keyPressed['s']) V3.add(camera.invPos, scaledForwardVec);
-		if (keyPressed['d']) V3.subtract(camera.invPos, scaledRightVec);
-		if (keyPressed[' ']) camera.invPos.y -= deltaPos;
-		if (keyPressed["shift"]) camera.invPos.y += deltaPos;
+		if (keyPressed["KeyW"]) V3.subtract(camera.invPos, scaledForwardVec);
+		if (keyPressed["KeyA"]) V3.add(camera.invPos, scaledRightVec);
+		if (keyPressed["KeyS"]) V3.add(camera.invPos, scaledForwardVec);
+		if (keyPressed["KeyD"]) V3.subtract(camera.invPos, scaledRightVec);
+		if (keyPressed["Space"]) camera.invPos[1] -= deltaPos;
+		if (keyPressed["ShiftLeft"]) camera.invPos[1] += deltaPos;
 
 
 		// Request next frame
