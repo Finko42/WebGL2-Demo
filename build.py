@@ -1,17 +1,14 @@
 import base64
 
-# Directory where source files are
-SRC_DIR   = 'scripts/'
-MAIN_FILE = 'main.js'
+MAIN_FILE = 'scripts/main.js'
 # Output file is put in current directory
-OUT_FILE  = 'out.html'
-# Directory of data files
-DATA_DIR  = 'assets/'
+OUT_FILE  = 'demo.html'
 
 HTML = '''<!DOCTYPE html>
-<title>WebGL2 Demo</title>
+<title>WebGL 2 Demo</title>
 <style>
-	body {
+	html, body {
+		height: 100%;
 		margin: 0;
   }
 	#c {
@@ -32,7 +29,7 @@ def die(filename, lineNo, i, msg):
 # Runs all custom commands in inFile and puts result in outFile
 # Calls itself on inserts (NOTE: Only main file can have inserts)
 def preprocessFile(inFilename):
-	with open(SRC_DIR+inFilename) as inFile:
+	with open(inFilename) as inFile:
 		lineNo = 1
 		start = 0
 		for line in inFile:
@@ -59,7 +56,7 @@ def preprocessFile(inFilename):
 								die(inFilename, lineNo, i, 'Inserts only allowed in main file')
 							preprocessFile(line[j:k])
 						case 'base64(': # Converts file to base64 and puts it at command
-							with open(DATA_DIR+line[j:k], 'rb') as f:
+							with open(line[j:k], 'rb') as f:
 								outFile.write(base64.b64encode(f.read()).decode('utf-8'))
 						case _: # No commands match
 							die(inFilename, lineNo, i, 'Invalid command')
